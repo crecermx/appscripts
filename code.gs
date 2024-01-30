@@ -3,8 +3,8 @@ function onOpen() {
   ui.createMenu('Crecer')
       .addItem('Crear pago', 'createPayments')
       .addItem('Cerrar semana', 'closeWeek')
-      .addItem('Crear directorio de cliente', 'createFolder')
-      .addItem('Crear pagaré', 'createPagare')
+      //.addItem('Crear directorio de cliente', 'createFolder')
+      //.addItem('Crear pagaré', 'createPagare')
       .addToUi();
 }
 
@@ -26,50 +26,80 @@ const createPayments = () => {
   let currentCell = sheet.getActiveCell();
   let index = currentCell.getRowIndex();
 
-  //for (let index = 2; index <= 113; index++) {
+  let idCredit = sheet.getRange('A' + index).getValue();
+  let idClient = sheet.getRange('E' + index).getValue();
+  let idCreditRenewed = sheet.getRange('D' + index).getValue();
 
-    let idCredit = sheet.getRange('A' + index).getValue();
-    let idClient = sheet.getRange('E' + index).getValue();
+  let response = ui.prompt('Estás seguro de crear la tabla de pago para ' + idCredit + '?', ui.ButtonSet.OK_CANCEL);
 
-    let response = ui.prompt('Estás seguro de crear la tabla de pago para ' + idCredit + '?', ui.ButtonSet.OK_CANCEL);
+  if (response.getSelectedButton() == ui.Button.OK) {
+    let sheets = SpreadsheetApp.getActiveSpreadsheet();
+    let paymentsSheet = sheets.getSheetByName(sheetPaymentsName);
 
-    if (response.getSelectedButton() == ui.Button.OK) {
-      let sheets = SpreadsheetApp.getActiveSpreadsheet();
-      let paymentsSheet = sheets.getSheetByName(sheetPaymentsName);
+    // Get client data
+    let clients = sheets.getSheetByName(sheetClientsName).getRange('A2:L').getValues();
+    let clientIndex = clients.map(c => c[0]).indexOf(idClient);
+    updateCreditRenewed(paymentsSheet, idCreditRenewed);
 
-      // Get client data
-      let clients = sheets.getSheetByName(sheetClientsName).getRange('A2:H').getValues();
-      let clientIndex = clients.map(c => c[0]).indexOf(idClient);
-      let clientName = clients[clientIndex][3] + ' ' + clients[clientIndex][4] + ' ' + clients[clientIndex][5];
-      let phone = clients[clientIndex][6];
-      let address = clients[clientIndex][7];
-      let comission = clients[clientIndex][11] == "Si" ? 0.035 : 0.07;
+    // Get data
+    let weeks = sheet.getRange('I' + index).getValue();
+    let weeklyPayment = sheet.getRange('T' + index).getValue();
+    let paymentDate = sheet.getRange('U' + index).getValue();
+    let frequency = sheet.getRange('V' + index).getValue();
+    let disposalDate = sheet.getRange('H' + index).getValue();
+    let withHeldPayment = sheet.getRange('Y' + index).getValue() == "Si";
 
-      // Get data
-      let weeks = sheet.getRange('I' + index).getValue();
-      let weeklyPayment = sheet.getRange('T' + index).getValue();
-      let paymentDate = sheet.getRange('U' + index).getValue();
-      let frequency = sheet.getRange('V' + index).getValue();
+    // Workarounds
+    weeks = frequency == "Semanal" ? weeks : weeks / 2;
+    weeklyPayment = frequency == "Semanal" ? weeklyPayment : weeklyPayment * 2;
+    let fixedDate = new Date(2023, 6, 27)
 
-      // Workarounds
-      weeks = frequency == "Semanal" ? weeks : weeks / 2;
-      weeklyPayment = frequency == "Semanal" ? weeklyPayment : weeklyPayment * 2;
-      let fixedDate = new Date(2023, 6, 27)
+    if (paymentDate != "" && weeklyPayment != "") {
+      let weekIndex = 1;
+      let accrual = weeklyPayment;
+      const rows = [];
+      let firstRow = paymentsSheet.getLastRow() + 1;
+      let lastRow = firstRow;
 
-      if (paymentDate != "" && weeklyPayment != "") {
-        for (let week = 1; week <= weeks; week++) {
-          const sWeek = week + " de " + weeks;
+      if (withHeldPayment) { // Si tiene pago retenido 
+        const sWeek = weekIndex + " de " + weeks;
+        const weekNumber = "=WEEKNUM(D" + lastRow + ")";
+        const debt = "=F".concat(lastRow, "-SUM(J", firstRow, ":J", lastRow, ")");
+        rows.push([idCredit, sWeek, weekNumber, disposalDate, weeklyPayment, accrual, debt, "Si", true, weeklyPayment]);
+        accrual += weeklyPayment;
+        weekIndex++;
+        lastRow++;
+      }
 
-          startDate = new Date(paymentDate.getFullYear(), 0, 1);
-          const days = Math.floor((paymentDate - startDate) / (24 * 60 * 60 * 1000));
-          const weekNumber = Math.ceil((paymentDate.getDay() + 1 + days) / 7);
+      for (let week = weekIndex; week <= weeks; week++, lastRow++) {
+        const sWeek = week + " de " + weeks;
+        const weekNumber = "=WEEKNUM(D" + lastRow + ")";
+        const debt = "=F".concat(lastRow, "-SUM(J", firstRow, ":J", lastRow, ")");
+        rows.push([idCredit, sWeek, weekNumber, paymentDate, weeklyPayment, accrual, debt, (paymentDate <= fixedDate ? "Si" : "No"), '', weeklyPayment]);
+        accrual += weeklyPayment;
+        paymentDate = addDays(paymentDate, frequency == "Semanal" ? 7 : 14);
+      }
 
-          const row = [idCredit, clientName, phone, address, sWeek, weekNumber, paymentDate, weeklyPayment, (paymentDate <= fixedDate ? "Si" : "No"), comission, comission * weeklyPayment]
-          paymentDate = addDays(paymentDate, frequency == "Semanal" ? 7 : 14);
-          paymentsSheet.appendRow(row);
-        }
+      paymentsSheet.getRange(paymentsSheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+    }
+  }
+}
+
+function getWeekNumber(date, row) {
+  return "=WEEKNUM(D" + row + ")";
+}
+
+function updateCreditRenewed(paymentsSheet, idCreditRenewed) {
+  if (idCreditRenewed != "") {
+    let rows = paymentsSheet.createTextFinder(idCreditRenewed).findAll();
+    for(let row of rows) {
+      const a1notation = "H" + row.getRowIndex();
+      const cell = paymentsSheet.getRange(a1notation);
+      if (cell.getValue() == "No") {
+        cell.setValue("Renovado");
       }
     }
+  }
 }
 
 function createFolder() {
@@ -94,21 +124,31 @@ function createFolder() {
 }
 
 function closeWeek() {
-  let sheets = SpreadsheetApp.getActiveSpreadsheet();
-  let paymentsSheet = sheets.getSheetByName(sheetPaymentsName);
-  let allPayments = paymentsSheet.getRange("A:I").getValues();
-  let payments = allPayments.filter(a => a[7] == true);
+  let ui = SpreadsheetApp.getUi();
+  const weekNumber = getISOWeekNumber(new Date());
+  let response = ui.prompt('Estás seguro de cerrar la semana ' + weekNumber +'?', ui.ButtonSet.OK_CANCEL);
 
-  let sheetWeek = sheets.insertSheet("New Sheet");
-  sheetWeek.getRange(sheetWeek.getLastRow() + 1, 1, payments.length, payments[0].length).setValues(payments);
+  if (response.getSelectedButton() == ui.Button.OK) {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName("Pagos");
 
-/*
-  
-  for (let pay of payments) {
-    sheetWeek.appendRow(pay);
+    let data = sheet.getDataRange();
+    let values = data.getValues();
+
+    values.filter(item => item[2] == weekNumber && item[7] == "No" &&(item[8] == "" || item[8] == false)).forEach(elem => {
+      elem[9] = 0;
+    });
+
+    sheet.getRange("J:J").setValues(values.map(c => [ c[9] ]));
   }
+}
 
-  */
+function getISOWeekNumber(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+  const yearStart = new Date(d.getFullYear(), 0, 1);
+  return Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
 }
 
 function createPagare() {
